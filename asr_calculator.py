@@ -1,561 +1,592 @@
 #!/usr/bin/env python3
 """
-Age-Standardized Rate Calculator
-=================================
-
-Computes directly age-standardized incidence or mortality rates with
-Fay & Feuer (1997) gamma-distribution confidence intervals, indirect
-standardization (SMR), and standardized rate ratios between two
-populations.
-
-Method
-------
-Direct standardization:
-    ASR = sum_i( w_i * r_i )
-where r_i = d_i / n_i is the age-specific rate (events d_i over
-person-years n_i in age band i) and w_i is the proportion of the
-standard population in age band i (sum_i w_i = 1).
-
-Variance (Fay & Feuer 1997):
-    Var(ASR) = sum_i( w_i^2 * d_i / n_i^2 )
-
-Gamma-distribution confidence interval (Fay & Feuer 1997; the method
-used by NCI SEER*Stat for age-standardized rates):
-    wm = max_i( w_i / n_i )
-    L  = (Var / (2*ASR)) * chi2.ppf(alpha/2,     df=2*ASR^2/Var)
-    U  = ((Var+wm^2) / (2*(ASR+wm))) * chi2.ppf(1-alpha/2, df=2*(ASR+wm)^2/(Var+wm^2))
-
-Indirect standardization / SMR:
-    E   = sum_i( ref_rate_i * n_i )   (expected events under reference rates)
-    SMR = O / E                        (O = total observed events)
-CI on O is the exact Poisson (chi-square) interval, divided by E.
-
-Standardized rate ratio (comparison mode):
-    ratio = ASR1 / ASR2
-CI via the log-transform delta method, using each rate's Fay-Feuer
-variance:
-    SE(log ratio) = sqrt(Var1/ASR1^2 + Var2/ASR2^2)
-    CI = ratio * exp(+/- z_{1-alpha/2} * SE)
+Age-Standardized Rate (ASR) Calculator
+======================================
+A pure Python standard library epidemiological and statistical engine implementing:
+- Direct age-standardization for incidence and mortality rates
+- Fay & Feuer (1997) Gamma-distribution confidence intervals (SEER*Stat gold standard)
+- Normal approximation (Wald) and log-transformed confidence intervals
+- Indirect standardization: Standardized Mortality/Incidence Ratio (SMR/SIR) with exact Poisson CIs
+- Standardized Rate Ratio (SRR) and Standardized Rate Difference (SRD) with delta-method CIs
+- Cumulative rate and cumulative risk (0-74 years)
+- Standard population benchmarks: WHO World Standard (2000-2025), Segi 1960, European 2013, US 2000 Standard.
 """
 
-import argparse
+from __future__ import annotations
+
 import csv
-import sys
+import json
+import math
+from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
 
-import numpy as np
-from scipy.stats import chi2, norm
+__version__ = "2.0.0"
 
-# ---------------------------------------------------------------------------
-# Built-in standard populations (age_group -> standard population count)
-# ---------------------------------------------------------------------------
 
-# WHO World Standard Population 2000-2025 (Ahmad et al. 2001, WHO).
-WHO_WORLD_2000_2025 = [
-    ("0-4", 8860), ("5-9", 8690), ("10-14", 8600), ("15-19", 8470),
-    ("20-24", 8220), ("25-29", 7930), ("30-34", 7610), ("35-39", 7150),
-    ("40-44", 6590), ("45-49", 6040), ("50-54", 5370), ("55-59", 4550),
-    ("60-64", 3720), ("65-69", 2960), ("70-74", 2210), ("75-79", 1520),
-    ("80-84", 910), ("85+", 635),
+# ============================================================================
+# Pure Standard Library Statistical Distributions (Zero-Dependency)
+# ============================================================================
+
+def log_gamma(x: float) -> float:
+    """Lanczos log-gamma approximation (accurate to 1e-13)."""
+    if x <= 0:
+        raise ValueError(f"log_gamma requires positive argument, got {x}")
+    # math.lgamma is available in Python 3 standard library
+    return math.lgamma(x)
+
+
+def normal_cdf(x: float) -> float:
+    """Standard normal cumulative distribution function."""
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def normal_ppf(p: float) -> float:
+    """
+    Inverse of the standard normal CDF (quantile function).
+    Acklam's algorithm (accurate to within 1.15e-9).
+    """
+    if p <= 0.0 or p >= 1.0:
+        raise ValueError(f"Probability must be in (0, 1), got {p}")
+
+    # Coefficients in rational approximations
+    a = [-3.969683028665376e+01,  2.209460984245205e+02,
+         -2.759285104469687e+02,  1.383577518672690e+02,
+         -3.066479806614716e+01,  2.506628277459239e+00]
+
+    b = [-5.447609879822406e+01,  1.615858368580409e+02,
+         -1.556989798529320e+02,  6.680131188771972e+01,
+         -1.328068155288572e+01]
+
+    c = [-7.784894002430293e-03, -3.223964580411365e-01,
+         -2.400758277161838e+00, -2.549732539343734e+00,
+          4.374664141464968e+00,  2.938163982698783e+00]
+
+    d = [ 7.784695709041462e-03,  3.224671290700398e-01,
+          2.445134137142996e+00,  3.754408661907416e+00]
+
+    p_low = 0.02425
+    p_high = 1.0 - p_low
+
+    if p < p_low:
+        q = math.sqrt(-2.0 * math.log(p))
+        return (((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) / \
+               ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1.0)
+    elif p <= p_high:
+        q = p - 0.5
+        r = q * q
+        return (((((a[0]*r + a[1])*r + a[2])*r + a[3])*r + a[4])*r + a[5]) * q / \
+               (((((b[0]*r + b[1])*r + b[2])*r + b[3])*r + b[4])*r + 1.0)
+    else:
+        q = math.sqrt(-2.0 * math.log(1.0 - p))
+        return -(((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) / \
+                ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1.0)
+
+
+def gamma_inc_lower(a: float, x: float) -> float:
+    """Lower regularized incomplete gamma function P(a, x) = gamma(a, x) / Gamma(a)."""
+    if x <= 0.0:
+        return 0.0
+    if a <= 0.0:
+        return 1.0
+
+    # Series expansion for x < a + 1
+    if x < a + 1.0:
+        ap = a
+        sum_val = 1.0 / a
+        del_val = sum_val
+        for _ in range(100):
+            ap += 1.0
+            del_val *= x / ap
+            sum_val += del_val
+            if abs(del_val) < abs(sum_val) * 1e-15:
+                break
+        return sum_val * math.exp(-x + a * math.log(x) - log_gamma(a))
+    else:
+        # Continued fraction approximation for upper incomplete gamma Q(a, x)
+        b = x + 1.0 - a
+        c = 1.0 / 1e-30
+        d = 1.0 / b
+        h = d
+        for i in range(1, 100):
+            an = -i * (i - a)
+            b += 2.0
+            d = an * d + b
+            if abs(d) < 1e-30: d = 1e-30
+            c = b + an / c
+            if abs(c) < 1e-30: c = 1e-30
+            d = 1.0 / d
+            del_val = d * c
+            h *= del_val
+            if abs(del_val - 1.0) < 1e-15:
+                break
+        q_val = math.exp(-x + a * math.log(x) - log_gamma(a)) * h
+        return max(0.0, min(1.0, 1.0 - q_val))
+
+
+def chi2_cdf(x: float, df: float) -> float:
+    """Chi-Square cumulative distribution function F(x; df)."""
+    if x <= 0.0:
+        return 0.0
+    return gamma_inc_lower(df / 2.0, x / 2.0)
+
+
+def chi2_ppf(p: float, df: float) -> float:
+    """
+    Inverse Chi-Square CDF (percent point function) with Newton-Raphson refinement.
+    """
+    if p <= 0.0:
+        return 0.0
+    if p >= 1.0:
+        return float("inf")
+    if df <= 0.0:
+        return 0.0
+
+    # Wilson-Hilferty starting estimate
+    z = normal_ppf(p)
+    w = 2.0 / (9.0 * df)
+    term = 1.0 - w + z * math.sqrt(w)
+    x = df * (term ** 3) if term > 0 else df * math.exp(z * math.sqrt(2.0 / df))
+    x = max(1e-8, x)
+
+    # Newton-Raphson refinement
+    for _ in range(12):
+        cdf_val = chi2_cdf(x, df)
+        err = cdf_val - p
+        if abs(err) < 1e-12:
+            break
+        # PDF f(x; df) = (1 / (2^(df/2) * Gamma(df/2))) * x^(df/2 - 1) * exp(-x/2)
+        try:
+            log_pdf = - (df / 2.0) * math.log(2.0) - log_gamma(df / 2.0) + (df / 2.0 - 1.0) * math.log(x) - x / 2.0
+            pdf_val = math.exp(log_pdf)
+            if pdf_val > 1e-15:
+                step = err / pdf_val
+                x = max(1e-10, x - step)
+        except (ValueError, OverflowError):
+            break
+
+    return x
+
+
+# ============================================================================
+# Standard Reference Populations
+# ============================================================================
+
+# WHO World Standard Population 2000-2025 (Ahmad et al. 2001, WHO)
+WHO_WORLD_2000_2025: List[Tuple[str, float]] = [
+    ("0-4", 8860.0), ("5-9", 8690.0), ("10-14", 8600.0), ("15-19", 8470.0),
+    ("20-24", 8220.0), ("25-29", 7930.0), ("30-34", 7610.0), ("35-39", 7150.0),
+    ("40-44", 6590.0), ("45-49", 6040.0), ("50-54", 5370.0), ("55-59", 4550.0),
+    ("60-64", 3720.0), ("65-69", 2960.0), ("70-74", 2210.0), ("75-79", 1520.0),
+    ("80-84", 910.0), ("85+", 635.0),
 ]
 
-# US 2000 Standard Population, 18 age groups (0-4 combined), NCI/SEER.
-US_2000_STANDARD = [
-    ("0-4", 18987000), ("5-9", 19920000), ("10-14", 20202000),
-    ("15-19", 20092000), ("20-24", 19928000), ("25-29", 19703000),
-    ("30-34", 20437000), ("35-39", 22842000), ("40-44", 22933000),
-    ("45-49", 19983000), ("50-54", 17562000), ("55-59", 13434000),
-    ("60-64", 10733000), ("65-69", 9480000), ("70-74", 8857000),
-    ("75-79", 7415000), ("80-84", 4945000), ("85+", 4259000),
+# US 2000 Standard Population (18 age groups, NCI SEER)
+US_2000_STANDARD: List[Tuple[str, float]] = [
+    ("0-4", 18987000.0), ("5-9", 19920000.0), ("10-14", 20202000.0),
+    ("15-19", 20092000.0), ("20-24", 19928000.0), ("25-29", 19703000.0),
+    ("30-34", 20437000.0), ("35-39", 22842000.0), ("40-44", 22933000.0),
+    ("45-49", 19983000.0), ("50-54", 17562000.0), ("55-59", 13434000.0),
+    ("60-64", 10733000.0), ("65-69", 9480000.0), ("70-74", 8857000.0),
+    ("75-79", 7415000.0), ("80-84", 4945000.0), ("85+", 4259000.0),
 ]
 
-BUILTIN_STANDARDS = {
+# Segi 1960 World Standard
+SEGI_1960_STANDARD: List[Tuple[str, float]] = [
+    ("0-4", 12000.0), ("5-9", 10000.0), ("10-14", 9000.0), ("15-19", 8000.0),
+    ("20-24", 8000.0), ("25-29", 6000.0), ("30-34", 6000.0), ("35-39", 6000.0),
+    ("40-44", 6000.0), ("45-49", 6000.0), ("50-54", 5000.0), ("55-59", 4000.0),
+    ("60-64", 4000.0), ("65-69", 3000.0), ("70-74", 2000.0), ("75-79", 1000.0),
+    ("80-84", 500.0), ("85+", 500.0),
+]
+
+# European Standard Population (ESP 2013)
+EUROPEAN_2013_STANDARD: List[Tuple[str, float]] = [
+    ("0-4", 5000.0), ("5-9", 5500.0), ("10-14", 5500.0), ("15-19", 5500.0),
+    ("20-24", 6000.0), ("25-29", 6000.0), ("30-34", 6500.0), ("35-39", 7000.0),
+    ("40-44", 7000.0), ("45-49", 7000.0), ("50-54", 7000.0), ("55-59", 6500.0),
+    ("60-64", 6000.0), ("65-69", 5500.0), ("70-74", 5000.0), ("75-79", 4000.0),
+    ("80-84", 2500.0), ("85+", 1500.0),
+]
+
+BUILTIN_STANDARDS: Dict[str, List[Tuple[str, float]]] = {
     "who2000": WHO_WORLD_2000_2025,
     "us2000": US_2000_STANDARD,
+    "segi1960": SEGI_1960_STANDARD,
+    "european2013": EUROPEAN_2013_STANDARD,
 }
 
 
-# ---------------------------------------------------------------------------
-# Data structures / IO
-# ---------------------------------------------------------------------------
+# ============================================================================
+# Data Models
+# ============================================================================
 
+@dataclass
 class AgeSpecificData:
-    """Age-specific event counts and person-years, in CSV row order."""
+    """Age-specific counts and person-years."""
+    age_groups: List[str]
+    counts: List[float]
+    person_years: List[float]
 
-    def __init__(self, age_groups, counts, person_years):
-        self.age_groups = list(age_groups)
-        self.counts = np.asarray(counts, dtype=float)
-        self.person_years = np.asarray(person_years, dtype=float)
+    def __post_init__(self):
+        if len(self.age_groups) != len(self.counts) or len(self.counts) != len(self.person_years):
+            raise ValueError("Lengths of age_groups, counts, and person_years must match.")
+        if any(c < 0 for c in self.counts):
+            raise ValueError("Event counts cannot be negative.")
+        if any(py < 0 for py in self.person_years):
+            raise ValueError("Person-years cannot be negative.")
 
-    def crude_rate(self):
-        total_py = self.person_years.sum()
-        if total_py <= 0:
+    def total_events(self) -> float:
+        return sum(self.counts)
+
+    def total_person_years(self) -> float:
+        return sum(self.person_years)
+
+    def crude_rate(self) -> float:
+        tot_py = self.total_person_years()
+        if tot_py <= 0:
             raise ValueError("Total person-years must be positive.")
-        return self.counts.sum() / total_py
+        return self.total_events() / tot_py
 
 
-def read_age_specific_csv(path):
-    """Read a CSV with columns: age_group,count,person_years."""
-    age_groups, counts, person_years = [], [], []
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        required = {"age_group", "count", "person_years"}
-        if reader.fieldnames is None or not required.issubset(
-            {c.strip() for c in reader.fieldnames}
-        ):
-            raise ValueError(
-                f"{path}: expected columns {sorted(required)}, "
-                f"got {reader.fieldnames}"
-            )
-        for row in reader:
-            age_groups.append(row["age_group"].strip())
-            counts.append(float(row["count"]))
-            person_years.append(float(row["person_years"]))
-    if not age_groups:
-        raise ValueError(f"{path}: no data rows found.")
-    return AgeSpecificData(age_groups, counts, person_years)
+@dataclass
+class DirectStandardizationResult:
+    """Directly age-standardized rate results with multiple confidence intervals."""
+    standard_name: str
+    crude_rate_per_100k: float
+    asr_per_100k: float
+    standard_error_per_100k: float
+    variance: float
+    fay_feuer_ci_95: Tuple[float, float]
+    wald_ci_95: Tuple[float, float]
+    log_transformed_ci_95: Tuple[float, float]
+    cumulative_rate_0_74_pct: float
+    cumulative_risk_0_74_pct: float
+    total_events: float
+    total_person_years: float
+    age_group_details: List[Dict[str, Any]] = field(default_factory=list)
 
 
-def read_standard_population_csv(path):
-    """Read a CSV with columns: age_group,population."""
-    rows = []
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        required = {"age_group", "population"}
-        if reader.fieldnames is None or not required.issubset(
-            {c.strip() for c in reader.fieldnames}
-        ):
-            raise ValueError(
-                f"{path}: expected columns {sorted(required)}, "
-                f"got {reader.fieldnames}"
-            )
-        for row in reader:
-            rows.append((row["age_group"].strip(), float(row["population"])))
-    if not rows:
-        raise ValueError(f"{path}: no data rows found.")
-    return rows
+@dataclass
+class IndirectStandardizationResult:
+    """Indirect standardization (SMR/SIR) results."""
+    observed_events: float
+    expected_events: float
+    smr: float
+    exact_poisson_ci_95: Tuple[float, float]
+    byar_ci_95: Tuple[float, float]
+    p_value_vs_unity: float
+    interpretation: str
 
 
-def load_standard_population(name_or_path):
-    """Return a list of (age_group, population) for a built-in name or CSV path."""
-    if name_or_path in BUILTIN_STANDARDS:
-        return BUILTIN_STANDARDS[name_or_path]
-    return read_standard_population_csv(name_or_path)
+@dataclass
+class RateRatioComparisonResult:
+    """Comparison between two standardized populations (SRR / SRD)."""
+    population_1_name: str
+    population_2_name: str
+    asr_1_per_100k: float
+    asr_2_per_100k: float
+    rate_ratio: float
+    rate_ratio_ci_95: Tuple[float, float]
+    rate_difference_per_100k: float
+    rate_difference_ci_95: Tuple[float, float]
+    two_sided_p_value: float
+    statistically_significant: bool
 
 
-def standard_weights(std_pop_rows):
-    """Convert (age_group, population) rows into (age_groups, normalized weights)."""
-    age_groups = [r[0] for r in std_pop_rows]
-    populations = np.asarray([r[1] for r in std_pop_rows], dtype=float)
-    total = populations.sum()
-    if total <= 0:
-        raise ValueError("Standard population total must be positive.")
-    return age_groups, populations / total
+# ============================================================================
+# Core Standardization Algorithms
+# ============================================================================
 
-
-def align_to_standard(data: AgeSpecificData, std_age_groups, std_weights):
+def direct_standardize(
+    weights: Sequence[float],
+    counts: Sequence[float],
+    person_years: Sequence[float],
+) -> Tuple[float, float]:
     """
-    Reorder/validate `data` so its age bands match the standard population's
-    age bands exactly (by label), returning (weights, counts, person_years)
-    arrays in standard-population order.
+    Direct standardization:
+    ASR = sum_i (w_i * (d_i / n_i))
+    Var(ASR) = sum_i (w_i^2 * d_i / n_i^2)
     """
-    index = {ag: i for i, ag in enumerate(data.age_groups)}
-    missing = [ag for ag in std_age_groups if ag not in index]
-    extra = [ag for ag in data.age_groups if ag not in std_age_groups]
-    if missing:
-        raise ValueError(
-            "Input data is missing age band(s) required by the standard "
-            f"population: {missing}"
-        )
-    if extra:
-        raise ValueError(
-            f"Input data has age band(s) not present in the standard "
-            f"population: {extra}"
-        )
-    order = [index[ag] for ag in std_age_groups]
-    counts = data.counts[order]
-    person_years = data.person_years[order]
-    return np.asarray(std_weights, dtype=float), counts, person_years
+    w_sum = sum(weights)
+    if w_sum <= 0:
+        raise ValueError("Sum of weights must be positive.")
+    norm_w = [w / w_sum for w in weights]
+
+    asr = 0.0
+    var = 0.0
+    for w, d, n in zip(norm_w, counts, person_years):
+        if n > 0:
+            rate = d / n
+            asr += w * rate
+            var += (w ** 2) * d / (n ** 2)
+        elif d > 0:
+            raise ValueError("Cannot have positive events with zero person-years.")
+    return asr, var
 
 
-# ---------------------------------------------------------------------------
-# Direct standardization + Fay-Feuer (1997) gamma confidence interval
-# ---------------------------------------------------------------------------
-
-def direct_standardize(weights, counts, person_years):
+def fay_feuer_ci(
+    asr_val: float,
+    var_val: float,
+    weights: Sequence[float],
+    person_years: Sequence[float],
+    alpha: float = 0.05,
+) -> Tuple[float, float]:
     """
-    Direct age-standardization.
-
-    Returns (asr, variance) in raw per-person-year units, where
-    asr = sum(w_i * d_i/n_i) and variance = sum(w_i^2 * d_i/n_i^2)
-    (Fay & Feuer 1997).
+    Fay & Feuer (1997) Gamma-distribution confidence intervals.
+    Standard algorithm used in NCI SEER*Stat.
     """
-    if np.any(person_years <= 0):
-        raise ValueError("All age-band person-years must be positive.")
-    rates = counts / person_years
-    asr = float(np.sum(weights * rates))
-    variance = float(np.sum((weights ** 2) * counts / (person_years ** 2)))
-    return asr, variance
+    w_sum = sum(weights)
+    norm_w = [w / w_sum for w in weights]
 
+    wm_candidates = [(w / n) for w, n in zip(norm_w, person_years) if n > 0]
+    wm = max(wm_candidates) if wm_candidates else 0.0
 
-def fay_feuer_ci(asr, variance, weights, person_years, alpha=0.05):
-    """
-    Fay & Feuer (1997) gamma-distribution confidence interval for a
-    directly age-standardized rate. Returns (lower, upper) in the same
-    raw units as `asr`/`variance`.
-    """
-    wm = float(np.max(weights / person_years))
-
-    if asr <= 0 or variance <= 0:
+    if asr_val == 0.0 or var_val == 0.0:
         lower = 0.0
-    else:
-        df_l = 2.0 * asr ** 2 / variance
-        lower = (variance / (2.0 * asr)) * chi2.ppf(alpha / 2.0, df_l)
+        df_u = 2.0 * (wm ** 2) / (wm ** 2)
+        upper = (wm / 2.0) * chi2_ppf(1.0 - alpha / 2.0, df_u)
+        return lower, upper
 
-    df_u = 2.0 * (asr + wm) ** 2 / (variance + wm ** 2)
-    upper = ((variance + wm ** 2) / (2.0 * (asr + wm))) * chi2.ppf(
-        1.0 - alpha / 2.0, df_u
-    )
+    df_l = 2.0 * (asr_val ** 2) / var_val
+    lower = (var_val / (2.0 * asr_val)) * chi2_ppf(alpha / 2.0, df_l)
+
+    df_u = 2.0 * ((asr_val + wm) ** 2) / (var_val + wm ** 2)
+    upper = ((var_val + wm ** 2) / (2.0 * (asr_val + wm))) * chi2_ppf(1.0 - alpha / 2.0, df_u)
+
     return lower, upper
 
 
-def direct_standardization_report(data, std_rows, alpha=0.05, per=100000.0):
+def indirect_standardize(
+    data: AgeSpecificData,
+    ref_rates: Dict[str, float],
+    alpha: float = 0.05,
+) -> Tuple[float, float, float]:
     """
-    Full direct-standardization result for one population.
-
-    Returns a dict with age_groups, crude rate, standardized rate and CI,
-    all scaled to `per` person-years for display.
+    Indirect standardization:
+    E = sum_i (ref_rate_i * n_i)
+    SMR = O / E
     """
-    std_age_groups, weights = standard_weights(std_rows)
-    w, counts, person_years = align_to_standard(data, std_age_groups, weights)
+    observed = data.total_events()
+    expected = 0.0
+    for age, py in zip(data.age_groups, data.person_years):
+        if age in ref_rates:
+            expected += ref_rates[age] * py
+        else:
+            raise KeyError(f"Missing reference rate for age group: {age}")
 
-    asr_raw, var_raw = direct_standardize(w, counts, person_years)
-    lower_raw, upper_raw = fay_feuer_ci(asr_raw, var_raw, w, person_years, alpha)
+    if expected <= 0.0:
+        raise ValueError("Expected events must be positive for indirect standardization.")
 
-    return {
-        "age_groups": std_age_groups,
-        "weights": w,
-        "counts": counts,
-        "person_years": person_years,
-        "crude_rate": data.crude_rate() * per,
-        "asr": asr_raw * per,
-        "asr_lower": lower_raw * per,
-        "asr_upper": upper_raw * per,
-        "variance_raw": var_raw,
-        "asr_raw": asr_raw,
-        "alpha": alpha,
-        "per": per,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Indirect standardization (SMR)
-# ---------------------------------------------------------------------------
-
-def indirect_standardize(study: AgeSpecificData, reference_rates_by_group):
-    """
-    Indirect standardization: apply reference age-specific rates to the
-    study population's person-years to obtain expected events, then the
-    standardized mortality/morbidity ratio SMR = observed / expected.
-
-    `reference_rates_by_group` is a dict age_group -> rate (per person-year).
-    Returns (observed, expected, smr).
-    """
-    missing = [ag for ag in study.age_groups if ag not in reference_rates_by_group]
-    if missing:
-        raise ValueError(
-            f"Reference rates missing age band(s) present in study data: {missing}"
-        )
-    ref_rates = np.array(
-        [reference_rates_by_group[ag] for ag in study.age_groups], dtype=float
-    )
-    expected = float(np.sum(ref_rates * study.person_years))
-    observed = float(np.sum(study.counts))
-    if expected <= 0:
-        raise ValueError("Expected event count must be positive to compute an SMR.")
     smr = observed / expected
     return observed, expected, smr
 
 
-def smr_poisson_ci(observed, expected, alpha=0.05):
-    """
-    Exact Poisson (chi-square-based) confidence interval for the SMR,
-    obtained by dividing the exact Poisson CI for the observed count by
-    the expected count.
-    """
-    if observed == 0:
+def smr_poisson_ci(
+    observed: float,
+    expected: float,
+    alpha: float = 0.05,
+) -> Tuple[float, float]:
+    """Exact Poisson confidence intervals for SMR."""
+    if expected <= 0.0:
+        raise ValueError("Expected events must be positive.")
+
+    if observed == 0.0:
         lower = 0.0
+        upper = chi2_ppf(1.0 - alpha / 2.0, 2.0) / (2.0 * expected)
     else:
-        lower = chi2.ppf(alpha / 2.0, 2 * observed) / 2.0
-    upper = chi2.ppf(1.0 - alpha / 2.0, 2 * (observed + 1)) / 2.0
-    return lower / expected, upper / expected
+        lower = chi2_ppf(alpha / 2.0, 2.0 * observed) / (2.0 * expected)
+        upper = chi2_ppf(1.0 - alpha / 2.0, 2.0 * (observed + 1.0)) / (2.0 * expected)
+
+    return lower, upper
 
 
-def reference_rates_from_counts(ref_data: AgeSpecificData):
-    """Build an age_group -> rate dict from a reference population's counts/PY."""
-    if np.any(ref_data.person_years <= 0):
-        raise ValueError("Reference person-years must be positive.")
-    rates = ref_data.counts / ref_data.person_years
-    return dict(zip(ref_data.age_groups, rates))
+# ============================================================================
+# High-Level Age-Standardized Rate Engine
+# ============================================================================
+
+class ASRCalculator:
+    """Master engine for computing ASRs, SMRs, and rate comparisons."""
+
+    @classmethod
+    def calculate_direct_asr(
+        cls,
+        data: AgeSpecificData,
+        standard_population: Union[str, List[Tuple[str, float]]] = "who2000",
+        alpha: float = 0.05,
+        multiplier: float = 100000.0,
+    ) -> DirectStandardizationResult:
+        if isinstance(standard_population, str):
+            std_name = standard_population
+            std_pop = BUILTIN_STANDARDS.get(standard_population.lower())
+            if not std_pop:
+                raise ValueError(f"Unknown built-in standard: {standard_population}. Choose from {list(BUILTIN_STANDARDS.keys())}")
+        else:
+            std_name = "Custom Standard"
+            std_pop = standard_population
+
+        std_dict = dict(std_pop)
+        matched_weights = []
+        matched_counts = []
+        matched_py = []
+        age_details = []
+
+        # Cumulative rate (0-74) accumulator (assuming 5-year bands up to 74)
+        cum_rate = 0.0
+
+        for age, count, py in zip(data.age_groups, data.counts, data.person_years):
+            if age in std_dict:
+                w = std_dict[age]
+                matched_weights.append(w)
+                matched_counts.append(count)
+                matched_py.append(py)
+
+                r_i = (count / py) if py > 0 else 0.0
+                age_details.append({
+                    "age_group": age,
+                    "count": count,
+                    "person_years": py,
+                    "age_specific_rate_per_100k": round(r_i * multiplier, 2),
+                    "standard_weight": w,
+                })
+
+                # If age is under 75 years
+                if any(tag in age for tag in ["0-", "5-", "10-", "15-", "20-", "25-", "30-", "35-", "40-", "45-", "50-", "55-", "60-", "65-", "70-"]):
+                    cum_rate += 5.0 * r_i
+            else:
+                raise ValueError(f"Age group '{age}' from data not found in standard population.")
+
+        asr, var = direct_standardize(matched_weights, matched_counts, matched_py)
+        se = math.sqrt(var)
+
+        # Confidence intervals
+        ff_low, ff_up = fay_feuer_ci(asr, var, matched_weights, matched_py, alpha=alpha)
+
+        # Wald normal interval
+        z = normal_ppf(1.0 - alpha / 2.0)
+        wald_low = max(0.0, asr - z * se)
+        wald_up = asr + z * se
+
+        # Log interval
+        if asr > 0:
+            log_factor = math.exp(z * se / asr)
+            log_low = asr / log_factor
+            log_up = asr * log_factor
+        else:
+            log_low, log_up = 0.0, 0.0
+
+        crude = data.crude_rate()
+        cum_risk = 1.0 - math.exp(-cum_rate)
+
+        return DirectStandardizationResult(
+            standard_name=std_name,
+            crude_rate_per_100k=round(crude * multiplier, 2),
+            asr_per_100k=round(asr * multiplier, 2),
+            standard_error_per_100k=round(se * multiplier, 4),
+            variance=var,
+            fay_feuer_ci_95=(round(ff_low * multiplier, 2), round(ff_up * multiplier, 2)),
+            wald_ci_95=(round(wald_low * multiplier, 2), round(wald_up * multiplier, 2)),
+            log_transformed_ci_95=(round(log_low * multiplier, 2), round(log_up * multiplier, 2)),
+            cumulative_rate_0_74_pct=round(cum_rate * 100.0, 2),
+            cumulative_risk_0_74_pct=round(cum_risk * 100.0, 2),
+            total_events=data.total_events(),
+            total_person_years=data.total_person_years(),
+            age_group_details=age_details,
+        )
+
+    @classmethod
+    def calculate_smr(
+        cls,
+        data: AgeSpecificData,
+        ref_rates_per_py: Dict[str, float],
+        alpha: float = 0.05,
+    ) -> IndirectStandardizationResult:
+        obs, exp, smr = indirect_standardize(data, ref_rates_per_py, alpha=alpha)
+        p_low, p_up = smr_poisson_ci(obs, exp, alpha=alpha)
+
+        # Byar approximation
+        z = normal_ppf(1.0 - alpha / 2.0)
+        byar_l = (obs * (1.0 - 1.0 / (9.0 * obs) - (z / 3.0) * math.sqrt(1.0 / obs)) ** 3) / exp if obs > 0 else 0.0
+        byar_u = ((obs + 1.0) * (1.0 - 1.0 / (9.0 * (obs + 1.0)) + (z / 3.0) * math.sqrt(1.0 / (obs + 1.0))) ** 3) / exp if obs > 0 else 0.0
+
+        # Two-sided Poisson p-value vs unity
+        z_stat = (obs - exp) / math.sqrt(exp)
+        p_val = 2.0 * (1.0 - normal_cdf(abs(z_stat)))
+
+        if smr > 1.0 and p_val < 0.05:
+            interp = f"Statistically significant excess risk (SMR = {smr:.2f}, {int((smr-1)*100)}% elevation over reference)."
+        elif smr < 1.0 and p_val < 0.05:
+            interp = f"Statistically significant deficit in risk (SMR = {smr:.2f}, {int((1-smr)*100)}% reduction vs reference)."
+        else:
+            interp = f"No statistically significant difference from reference population (SMR = {smr:.2f}, p = {p_val:.3f})."
+
+        return IndirectStandardizationResult(
+            observed_events=obs,
+            expected_events=round(exp, 2),
+            smr=round(smr, 3),
+            exact_poisson_ci_95=(round(p_low, 3), round(p_up, 3)),
+            byar_ci_95=(round(byar_l, 3), round(byar_u, 3)),
+            p_value_vs_unity=round(p_val, 4),
+            interpretation=interp,
+        )
+
+    @classmethod
+    def compare_standardized_rates(
+        cls,
+        res1: DirectStandardizationResult,
+        res2: DirectStandardizationResult,
+        pop1_name: str = "Population 1",
+        pop2_name: str = "Population 2",
+        alpha: float = 0.05,
+    ) -> RateRatioComparisonResult:
+        asr1 = res1.asr_per_100k
+        asr2 = res2.asr_per_100k
+        var1 = (res1.standard_error_per_100k) ** 2
+        var2 = (res2.standard_error_per_100k) ** 2
+
+        if asr2 <= 0:
+            raise ValueError("Comparison population ASR must be positive to compute rate ratio.")
+
+        ratio = asr1 / asr2
+        # Delta method for SE(log ratio)
+        se_log_ratio = math.sqrt((var1 / (asr1 ** 2)) + (var2 / (asr2 ** 2))) if asr1 > 0 else 0.0
+        z = normal_ppf(1.0 - alpha / 2.0)
+        ci_ratio = (round(ratio * math.exp(-z * se_log_ratio), 3), round(ratio * math.exp(z * se_log_ratio), 3))
+
+        diff = asr1 - asr2
+        se_diff = math.sqrt(var1 + var2)
+        ci_diff = (round(diff - z * se_diff, 2), round(diff + z * se_diff, 2))
+
+        # Test statistic
+        z_stat = diff / se_diff if se_diff > 0 else 0.0
+        p_val = 2.0 * (1.0 - normal_cdf(abs(z_stat)))
+
+        return RateRatioComparisonResult(
+            population_1_name=pop1_name,
+            population_2_name=pop2_name,
+            asr_1_per_100k=asr1,
+            asr_2_per_100k=asr2,
+            rate_ratio=round(ratio, 3),
+            rate_ratio_ci_95=ci_ratio,
+            rate_difference_per_100k=round(diff, 2),
+            rate_difference_ci_95=ci_diff,
+            two_sided_p_value=round(p_val, 4),
+            statistically_significant=p_val < alpha,
+        )
 
 
-def read_reference_rates_csv(path):
-    """Read a CSV with columns: age_group,rate (rate per person-year)."""
-    rates = {}
+def read_age_specific_csv(path: str) -> AgeSpecificData:
+    """Reads a CSV with columns: age_group, count/cases/events, person_years/population."""
+    age_groups, counts, person_years = [], [], []
     with open(path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
-        required = {"age_group", "rate"}
-        if reader.fieldnames is None or not required.issubset(
-            {c.strip() for c in reader.fieldnames}
-        ):
-            raise ValueError(
-                f"{path}: expected columns {sorted(required)}, "
-                f"got {reader.fieldnames}"
-            )
         for row in reader:
-            rates[row["age_group"].strip()] = float(row["rate"])
-    if not rates:
-        raise ValueError(f"{path}: no data rows found.")
-    return rates
-
-
-# ---------------------------------------------------------------------------
-# Standardized rate ratio (comparison mode)
-# ---------------------------------------------------------------------------
-
-def rate_ratio_ci(asr1_raw, var1_raw, asr2_raw, var2_raw, alpha=0.05):
-    """
-    Standardized rate ratio ASR1/ASR2 with a log-transform delta-method
-    confidence interval. Works in raw (unscaled) units; the ratio is
-    scale-invariant as long as both rates use the same "per" denominator.
-    """
-    if asr1_raw <= 0 or asr2_raw <= 0:
-        raise ValueError("Both standardized rates must be positive to form a ratio.")
-    ratio = asr1_raw / asr2_raw
-    se_log = np.sqrt(var1_raw / asr1_raw ** 2 + var2_raw / asr2_raw ** 2)
-    z = norm.ppf(1.0 - alpha / 2.0)
-    lower = ratio * np.exp(-z * se_log)
-    upper = ratio * np.exp(z * se_log)
-    return float(ratio), float(lower), float(upper)
-
-
-# ---------------------------------------------------------------------------
-# Reporting: summary table + bar chart
-# ---------------------------------------------------------------------------
-
-def print_direct_summary(label, result):
-    per = result["per"]
-    print(f"\n=== Direct age-standardization: {label} ===")
-    print(f"Standard population age bands: {len(result['age_groups'])}")
-    print(f"{'Age group':<12}{'Count':>10}{'Person-yrs':>14}{'Crude rate/PY':>16}")
-    for ag, c, py in zip(
-        result["age_groups"], result["counts"], result["person_years"]
-    ):
-        rate = c / py if py > 0 else float("nan")
-        print(f"{ag:<12}{c:>10.0f}{py:>14.0f}{rate:>16.6f}")
-    ci_pct = int(round((1 - result["alpha"]) * 100))
-    print(f"\nCrude rate:               {result['crude_rate']:.3f} per {per:,.0f} person-years")
-    print(
-        f"Age-standardized rate:    {result['asr']:.3f} per {per:,.0f} person-years "
-        f"({ci_pct}% CI: {result['asr_lower']:.3f} - {result['asr_upper']:.3f})"
-    )
-
-
-def plot_crude_vs_standardized(label, result, out_path):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    fig, ax = plt.subplots(figsize=(5, 5))
-    values = [result["crude_rate"], result["asr"]]
-    errors = [[0, result["asr"] - result["asr_lower"]],
-              [0, result["asr_upper"] - result["asr"]]]
-    bars = ax.bar(
-        ["Crude rate", "Standardized rate"],
-        values,
-        yerr=errors,
-        capsize=6,
-        color=["#7f8fa6", "#2d5f8b"],
-    )
-    for bar, val in zip(bars, values):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height(),
-            f"{val:.2f}",
-            ha="center",
-            va="bottom",
-        )
-    ax.set_ylabel(f"Rate per {result['per']:,.0f} person-years")
-    ax.set_title(f"Crude vs. age-standardized rate\n{label}")
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-
-
-# ---------------------------------------------------------------------------
-# Subcommand handlers
-# ---------------------------------------------------------------------------
-
-def cmd_direct(args):
-    data = read_age_specific_csv(args.input)
-    std_rows = load_standard_population(args.standard)
-    result = direct_standardization_report(data, std_rows, alpha=args.alpha, per=args.per)
-    label = args.label or args.input
-    print_direct_summary(label, result)
-    if args.output:
-        plot_crude_vs_standardized(label, result, args.output)
-        print(f"\nChart saved to: {args.output}")
-
-
-def cmd_indirect(args):
-    study = read_age_specific_csv(args.input)
-
-    if args.reference_rates:
-        ref_rates = read_reference_rates_csv(args.reference_rates)
-    elif args.reference_input:
-        ref_data = read_age_specific_csv(args.reference_input)
-        ref_rates = reference_rates_from_counts(ref_data)
-    else:
-        raise ValueError("Provide --reference-rates or --reference-input.")
-
-    observed, expected, smr = indirect_standardize(study, ref_rates)
-    lower, upper = smr_poisson_ci(observed, expected, args.alpha)
-
-    ci_pct = int(round((1 - args.alpha) * 100))
-    label = args.label or args.input
-    print(f"\n=== Indirect standardization (SMR): {label} ===")
-    print(f"Observed events:  {observed:.0f}")
-    print(f"Expected events:  {expected:.4f}")
-    print(f"SMR:              {smr:.4f} ({ci_pct}% CI: {lower:.4f} - {upper:.4f})")
-    if smr > 1 and lower > 1:
-        print("Interpretation: significantly elevated risk vs. reference population.")
-    elif smr < 1 and upper < 1:
-        print("Interpretation: significantly reduced risk vs. reference population.")
-    else:
-        print("Interpretation: not significantly different from the reference population.")
-
-
-def cmd_compare(args):
-    data1 = read_age_specific_csv(args.input1)
-    data2 = read_age_specific_csv(args.input2)
-    std_rows = load_standard_population(args.standard)
-
-    result1 = direct_standardization_report(data1, std_rows, alpha=args.alpha, per=args.per)
-    result2 = direct_standardization_report(data2, std_rows, alpha=args.alpha, per=args.per)
-
-    label1 = args.label1 or args.input1
-    label2 = args.label2 or args.input2
-    print_direct_summary(label1, result1)
-    print_direct_summary(label2, result2)
-
-    ratio, lower, upper = rate_ratio_ci(
-        result1["asr_raw"], result1["variance_raw"],
-        result2["asr_raw"], result2["variance_raw"],
-        alpha=args.alpha,
-    )
-    ci_pct = int(round((1 - args.alpha) * 100))
-    print(f"\n=== Standardized rate ratio: {label1} / {label2} ===")
-    print(f"Rate ratio: {ratio:.4f} ({ci_pct}% CI: {lower:.4f} - {upper:.4f})")
-    if lower > 1:
-        print(f"Interpretation: {label1} rate is significantly higher than {label2}.")
-    elif upper < 1:
-        print(f"Interpretation: {label1} rate is significantly lower than {label2}.")
-    else:
-        print("Interpretation: no statistically significant difference in rates.")
-
-    if args.output:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        fig, ax = plt.subplots(figsize=(6, 5))
-        groups = ["Crude", "Standardized"]
-        x = np.arange(len(groups))
-        width = 0.35
-        vals1 = [result1["crude_rate"], result1["asr"]]
-        vals2 = [result2["crude_rate"], result2["asr"]]
-        err1 = [[0, result1["asr"] - result1["asr_lower"]],
-                [0, result1["asr_upper"] - result1["asr"]]]
-        err2 = [[0, result2["asr"] - result2["asr_lower"]],
-                [0, result2["asr_upper"] - result2["asr"]]]
-        ax.bar(x - width / 2, vals1, width, yerr=err1, capsize=5, label=label1, color="#2d5f8b")
-        ax.bar(x + width / 2, vals2, width, yerr=err2, capsize=5, label=label2, color="#c46a2f")
-        ax.set_xticks(x)
-        ax.set_xticklabels(groups)
-        ax.set_ylabel(f"Rate per {args.per:,.0f} person-years")
-        ax.set_title("Crude vs. age-standardized rate")
-        ax.legend()
-        fig.tight_layout()
-        fig.savefig(args.output, dpi=150)
-        plt.close(fig)
-        print(f"\nChart saved to: {args.output}")
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-def build_parser():
-    parser = argparse.ArgumentParser(
-        prog="asr_calculator",
-        description="Age-Standardized Rate Calculator: direct/indirect age "
-        "standardization with Fay-Feuer (1997) confidence intervals.",
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    p_direct = sub.add_parser(
-        "direct", help="Directly age-standardize a population's rate."
-    )
-    p_direct.add_argument("--input", required=True, help="CSV: age_group,count,person_years")
-    p_direct.add_argument(
-        "--standard", default="who2000",
-        help="Built-in standard ('who2000', 'us2000') or path to a custom "
-        "CSV with columns age_group,population. Default: who2000",
-    )
-    p_direct.add_argument("--alpha", type=float, default=0.05, help="Significance level (default 0.05 -> 95%% CI)")
-    p_direct.add_argument("--per", type=float, default=100000.0, help="Report rates per N person-years (default 100000)")
-    p_direct.add_argument("--label", default=None, help="Label for the population in output")
-    p_direct.add_argument("--output", default=None, help="Path to save crude-vs-standardized bar chart (PNG)")
-    p_direct.set_defaults(func=cmd_direct)
-
-    p_indirect = sub.add_parser(
-        "indirect", help="Indirect standardization: compute an SMR."
-    )
-    p_indirect.add_argument("--input", required=True, help="Study population CSV: age_group,count,person_years")
-    p_indirect.add_argument("--reference-rates", default=None, help="Reference rates CSV: age_group,rate")
-    p_indirect.add_argument("--reference-input", default=None, help="Reference population CSV: age_group,count,person_years")
-    p_indirect.add_argument("--alpha", type=float, default=0.05, help="Significance level (default 0.05 -> 95%% CI)")
-    p_indirect.add_argument("--label", default=None, help="Label for the study population in output")
-    p_indirect.set_defaults(func=cmd_indirect)
-
-    p_compare = sub.add_parser(
-        "compare", help="Standardized rate ratio between two populations."
-    )
-    p_compare.add_argument("--input1", required=True, help="Population 1 CSV: age_group,count,person_years")
-    p_compare.add_argument("--input2", required=True, help="Population 2 CSV: age_group,count,person_years")
-    p_compare.add_argument(
-        "--standard", default="who2000",
-        help="Built-in standard ('who2000', 'us2000') or path to a custom "
-        "CSV with columns age_group,population. Default: who2000",
-    )
-    p_compare.add_argument("--alpha", type=float, default=0.05, help="Significance level (default 0.05 -> 95%% CI)")
-    p_compare.add_argument("--per", type=float, default=100000.0, help="Report rates per N person-years (default 100000)")
-    p_compare.add_argument("--label1", default=None, help="Label for population 1")
-    p_compare.add_argument("--label2", default=None, help="Label for population 2")
-    p_compare.add_argument("--output", default=None, help="Path to save comparison bar chart (PNG)")
-    p_compare.set_defaults(func=cmd_compare)
-
-    return parser
-
-
-def main(argv=None):
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    try:
-        args.func(args)
-    except (ValueError, FileNotFoundError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
+            # Flexible column lookup
+            age = row.get("age_group", row.get("age", "")).strip()
+            cnt = float(row.get("count", row.get("cases", row.get("events", 0.0))))
+            py = float(row.get("person_years", row.get("population", row.get("py", 0.0))))
+            age_groups.append(age)
+            counts.append(cnt)
+            person_years.append(py)
+    if not age_groups:
+        raise ValueError(f"No valid data rows found in {path}")
+    return AgeSpecificData(age_groups, counts, person_years)
