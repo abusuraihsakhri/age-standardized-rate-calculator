@@ -12,6 +12,7 @@ import argparse
 import csv
 import json
 import sys
+from dataclasses import asdict
 from typing import List, Optional
 
 from asr_calculator import (
@@ -170,6 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
     dir_p.add_argument("--input", "-in", required=True, help="Input CSV path (age_group, count, person_years)")
     dir_p.add_argument("--standard", "-std", choices=list(BUILTIN_STANDARDS.keys()), default="who2000", help="Standard population")
     dir_p.add_argument("--alpha", type=float, default=0.05, help="Significance level (default 0.05 for 95% CI)")
+    dir_p.add_argument("--json", action="store_true", help="Output results in JSON format")
 
     # Compare
     cmp_p = sub.add_parser("compare", help="Compare standardized rates between two CSV populations")
@@ -178,6 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
     cmp_p.add_argument("--name1", default="Population 1", help="Label for Population 1")
     cmp_p.add_argument("--name2", default="Population 2", help="Label for Population 2")
     cmp_p.add_argument("--standard", choices=list(BUILTIN_STANDARDS.keys()), default="who2000")
+    cmp_p.add_argument("--json", action="store_true", help="Output results in JSON format")
 
     # Batch output
     b_p = sub.add_parser("batch", help="Batch compute direct ASR and export results CSV")
