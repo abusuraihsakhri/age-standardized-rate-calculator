@@ -29,6 +29,7 @@ try:
     from asr_calculator import (
         AgeSpecificData,
         BUILTIN_STANDARDS,
+        EUROPEAN_2013_STANDARD,
         direct_standardization_report,
     )
 except ImportError:  # allow running from repo root
@@ -38,6 +39,7 @@ except ImportError:  # allow running from repo root
     from asr_calculator import (
         AgeSpecificData,
         BUILTIN_STANDARDS,
+        EUROPEAN_2013_STANDARD,
         direct_standardization_report,
     )
 
@@ -46,15 +48,9 @@ except ImportError:  # allow running from repo root
 # 1. Multi-standard population comparison
 # ---------------------------------------------------------------------------
 
-# European Standard Population 2013 (ESP 2013), 18 five-year bands,
-# total 185,000 (Eurostat / Public Health England reference).
-EUROPEAN_STANDARD_2013 = [
-    ("0-4", 5000), ("5-9", 5500), ("10-14", 5500), ("15-19", 5500),
-    ("20-24", 6000), ("25-29", 6000), ("30-34", 6500), ("35-39", 7000),
-    ("40-44", 7000), ("45-49", 7000), ("50-54", 7000), ("55-59", 6500),
-    ("60-64", 6000), ("65-69", 5500), ("70-74", 5000), ("75-79", 4000),
-    ("80-84", 2500), ("85+", 3000),
-]
+# European Standard Population 2013 (ESP 2013), 18 five-year bands.
+# Source: EUROPEAN_2013_STANDARD in asr_calculator.py (authoritative definition).
+EUROPEAN_STANDARD_2013 = EUROPEAN_2013_STANDARD
 
 
 def all_standard_populations():

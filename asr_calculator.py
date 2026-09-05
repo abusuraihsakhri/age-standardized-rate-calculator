@@ -17,7 +17,9 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 from dataclasses import dataclass, field, asdict
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
 
 __version__ = "2.0.0"
@@ -307,6 +309,8 @@ def direct_standardize(
     ASR = sum_i (w_i * (d_i / n_i))
     Var(ASR) = sum_i (w_i^2 * d_i / n_i^2)
     """
+    if len(weights) != len(counts) or len(counts) != len(person_years):
+        raise ValueError("Lengths of weights, counts, and person_years must match.")
     w_sum = sum(weights)
     if w_sum <= 0:
         raise ValueError("Sum of weights must be positive.")
@@ -335,6 +339,8 @@ def fay_feuer_ci(
     Fay & Feuer (1997) Gamma-distribution confidence intervals.
     Standard algorithm used in NCI SEER*Stat.
     """
+    if not (0.0 < alpha < 1.0):
+        raise ValueError(f"alpha must be in (0, 1), got {alpha}")
     w_sum = sum(weights)
     norm_w = [w / w_sum for w in weights]
 
@@ -366,6 +372,8 @@ def indirect_standardize(
     E = sum_i (ref_rate_i * n_i)
     SMR = O / E
     """
+    if not (0.0 < alpha < 1.0):
+        raise ValueError(f"alpha must be in (0, 1), got {alpha}")
     observed = data.total_events()
     expected = 0.0
     for age, py in zip(data.age_groups, data.person_years):
@@ -387,6 +395,8 @@ def smr_poisson_ci(
     alpha: float = 0.05,
 ) -> Tuple[float, float]:
     """Exact Poisson confidence intervals for SMR."""
+    if not (0.0 < alpha < 1.0):
+        raise ValueError(f"alpha must be in (0, 1), got {alpha}")
     if expected <= 0.0:
         raise ValueError("Expected events must be positive.")
 
@@ -415,6 +425,10 @@ class ASRCalculator:
         alpha: float = 0.05,
         multiplier: float = 100000.0,
     ) -> DirectStandardizationResult:
+        if not (0.0 < alpha < 1.0):
+            raise ValueError(f"alpha must be in (0, 1), got {alpha}")
+        if multiplier <= 0:
+            raise ValueError(f"multiplier must be positive, got {multiplier}")
         if isinstance(standard_population, str):
             std_name = standard_population
             std_pop = BUILTIN_STANDARDS.get(standard_population.lower())
@@ -500,6 +514,8 @@ class ASRCalculator:
         ref_rates_per_py: Dict[str, float],
         alpha: float = 0.05,
     ) -> IndirectStandardizationResult:
+        if not (0.0 < alpha < 1.0):
+            raise ValueError(f"alpha must be in (0, 1), got {alpha}")
         obs, exp, smr = indirect_standardize(data, ref_rates_per_py, alpha=alpha)
         p_low, p_up = smr_poisson_ci(obs, exp, alpha=alpha)
 
@@ -538,6 +554,8 @@ class ASRCalculator:
         pop2_name: str = "Population 2",
         alpha: float = 0.05,
     ) -> RateRatioComparisonResult:
+        if not (0.0 < alpha < 1.0):
+            raise ValueError(f"alpha must be in (0, 1), got {alpha}")
         asr1 = res1.asr_per_100k
         asr2 = res2.asr_per_100k
         var1 = (res1.standard_error_per_100k) ** 2
@@ -575,18 +593,113 @@ class ASRCalculator:
 
 
 def read_age_specific_csv(path: str) -> AgeSpecificData:
-    """Reads a CSV with columns: age_group, count/cases/events, person_years/population."""
+    """Reads a CSV with columns: age_group, count/cases/events, person_years/population.
+
+    Validates that the file exists, has a .csv extension, and contains
+    non-negative numeric values for counts and person-years.
+    """
+    # Security: validate file extension and existence
+    csv_path = Path(path)
+    if csv_path.suffix.lower() != ".csv":
+        raise ValueError(f"Expected a .csv file, got: {path}")
+    if not csv_path.is_file():
+        raise FileNotFoundError(f"CSV file not found: {path}")
+
     age_groups, counts, person_years = [], [], []
-    with open(path, newline="", encoding="utf-8-sig") as f:
+    with open(csv_path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
-        for row in reader:
+        for row_num, row in enumerate(reader, start=2):  # row 1 is header
             # Flexible column lookup
             age = row.get("age_group", row.get("age", "")).strip()
-            cnt = float(row.get("count", row.get("cases", row.get("events", 0.0))))
-            py = float(row.get("person_years", row.get("population", row.get("py", 0.0))))
+            if not age:
+                raise ValueError(f"Missing age_group in row {row_num} of {path}")
+            try:
+                cnt = float(row.get("count", row.get("cases", row.get("events", 0.0))))
+                py = float(row.get("person_years", row.get("population", row.get("py", 0.0))))
+            except (ValueError, TypeError) as e:
+                raise ValueError(f"Invalid numeric value in row {row_num} of {path}: {e}")
+            if cnt < 0:
+                raise ValueError(f"Negative count in row {row_num} of {path}: {cnt}")
+            if py < 0:
+                raise ValueError(f"Negative person-years in row {row_num} of {path}: {py}")
             age_groups.append(age)
             counts.append(cnt)
             person_years.append(py)
     if not age_groups:
         raise ValueError(f"No valid data rows found in {path}")
     return AgeSpecificData(age_groups, counts, person_years)
+
+
+# ============================================================================
+# Helper Functions for Enrichment Features & External Modules
+# ============================================================================
+
+def standard_weights(std_rows: Sequence[Tuple[str, float]]) -> Tuple[List[str], List[float]]:
+    """
+    Extract age group labels and proportional weights from a standard population table.
+
+    Returns (age_groups, weights) where weights sum to 1.0.
+    """
+    if not std_rows:
+        raise ValueError("Standard population rows cannot be empty.")
+    ages = [r[0] for r in std_rows]
+    raw_weights = [float(r[1]) for r in std_rows]
+    total = sum(raw_weights)
+    if total <= 0:
+        raise ValueError("Sum of standard population weights must be positive.")
+    weights = [w / total for w in raw_weights]
+    return ages, weights
+
+
+def align_to_standard(
+    data: AgeSpecificData,
+    std_ages: Sequence[str],
+    std_weights: Sequence[float],
+) -> Tuple[List[float], List[float], List[float]]:
+    """
+    Align age-specific data to a standard population's age bands.
+
+    Returns (matched_weights, matched_counts, matched_person_years) for age
+    groups present in both data and standard. Raises ValueError if an age
+    group in the standard is missing from the data.
+    """
+    data_dict = dict(zip(data.age_groups, zip(data.counts, data.person_years)))
+    matched_w, matched_c, matched_py = [], [], []
+    for age, w in zip(std_ages, std_weights):
+        if age not in data_dict:
+            raise ValueError(f"Age group '{age}' from standard not found in data.")
+        c, py = data_dict[age]
+        matched_w.append(w)
+        matched_c.append(c)
+        matched_py.append(py)
+    return matched_w, matched_c, matched_py
+
+
+def direct_standardization_report(
+    data: AgeSpecificData,
+    std_rows: Sequence[Tuple[str, float]],
+    alpha: float = 0.05,
+    per: float = 100000.0,
+) -> Dict[str, float]:
+    """
+    Compute a direct age-standardization report (compatible with enrichment features).
+
+    Returns a dict with keys:
+        - asr: age-standardized rate (scaled by `per`)
+        - asr_raw: age-standardized rate (per person-year, unscaled)
+        - asr_lower: lower confidence bound (Fay & Feuer)
+        - asr_upper: upper confidence bound (Fay & Feuer)
+        - crude_rate: crude rate (scaled by `per`)
+    """
+    ages, weights = standard_weights(std_rows)
+    w, c, py = align_to_standard(data, ages, weights)
+    asr_raw, var_raw = direct_standardize(weights, c, py)
+    low, high = fay_feuer_ci(asr_raw, var_raw, weights, py, alpha=alpha)
+    crude = data.crude_rate()
+    return {
+        "asr": round(asr_raw * per, 2),
+        "asr_raw": asr_raw,
+        "asr_lower": round(low * per, 2),
+        "asr_upper": round(high * per, 2),
+        "crude_rate": round(crude * per, 2),
+    }

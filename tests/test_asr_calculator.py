@@ -33,6 +33,7 @@ from asr_calculator import (
     ASRCalculator,
     BUILTIN_STANDARDS,
     direct_standardize,
+    direct_standardization_report,
     fay_feuer_ci,
     indirect_standardize,
     smr_poisson_ci,
@@ -40,6 +41,8 @@ from asr_calculator import (
     normal_cdf,
     normal_ppf,
     chi2_ppf,
+    standard_weights,
+    align_to_standard,
 )
 import cli
 
@@ -186,6 +189,125 @@ class TestCLIAndBatch(unittest.TestCase):
             ret = cli.main(["batch", "--input", str(sample_path), "--output", out_file])
             self.assertEqual(ret, 0)
             self.assertTrue(os.path.exists(out_file))
+
+    def test_cli_compare(self):
+        pop1 = ROOT_DIR / "examples" / "population_a.csv"
+        pop2 = ROOT_DIR / "examples" / "population_b.csv"
+        self.assertEqual(cli.main(["compare", "--pop1", str(pop1), "--pop2", str(pop2)]), 0)
+
+
+class TestHelperFunctions(unittest.TestCase):
+    """Tests for standard_weights, align_to_standard, direct_standardization_report."""
+
+    def test_standard_weights_basic(self):
+        rows = [("0-4", 100.0), ("5-9", 200.0), ("10-14", 300.0)]
+        ages, weights = standard_weights(rows)
+        self.assertEqual(ages, ["0-4", "5-9", "10-14"])
+        self.assertAlmostEqual(sum(weights), 1.0, places=10)
+        self.assertAlmostEqual(weights[0], 100.0 / 600.0, places=10)
+        self.assertAlmostEqual(weights[1], 200.0 / 600.0, places=10)
+        self.assertAlmostEqual(weights[2], 300.0 / 600.0, places=10)
+
+    def test_standard_weights_empty_raises(self):
+        with self.assertRaises(ValueError):
+            standard_weights([])
+
+    def test_standard_weights_zero_sum_raises(self):
+        with self.assertRaises(ValueError):
+            standard_weights([("0-4", 0.0), ("5-9", 0.0)])
+
+    def test_align_to_standard_basic(self):
+        data = AgeSpecificData(
+            age_groups=["0-4", "5-9", "10-14"],
+            counts=[10.0, 20.0, 30.0],
+            person_years=[1000.0, 2000.0, 3000.0],
+        )
+        std_ages = ["0-4", "10-14"]
+        std_weights = [0.5, 0.5]
+        w, c, py = align_to_standard(data, std_ages, std_weights)
+        self.assertEqual(w, [0.5, 0.5])
+        self.assertEqual(c, [10.0, 30.0])
+        self.assertEqual(py, [1000.0, 3000.0])
+
+    def test_align_to_standard_missing_age_raises(self):
+        data = AgeSpecificData(
+            age_groups=["0-4", "5-9"],
+            counts=[10.0, 20.0],
+            person_years=[1000.0, 2000.0],
+        )
+        with self.assertRaises(ValueError):
+            align_to_standard(data, ["0-4", "99+"], [0.5, 0.5])
+
+    def test_direct_standardization_report(self):
+        data = AgeSpecificData(
+            age_groups=["0-4", "5-9"],
+            counts=[10.0, 20.0],
+            person_years=[10000.0, 10000.0],
+        )
+        std_rows = [("0-4", 500.0), ("5-9", 500.0)]
+        rep = direct_standardization_report(data, std_rows)
+        self.assertIn("asr", rep)
+        self.assertIn("asr_raw", rep)
+        self.assertIn("asr_lower", rep)
+        self.assertIn("asr_upper", rep)
+        self.assertIn("crude_rate", rep)
+        self.assertGreater(rep["asr"], 0)
+        self.assertLess(rep["asr_lower"], rep["asr"])
+        self.assertGreater(rep["asr_upper"], rep["asr"])
+
+
+class TestInputValidation(unittest.TestCase):
+    """Tests for alpha parameter validation and CSV security."""
+
+    def test_invalid_alpha_direct_standardize_raises(self):
+        data = AgeSpecificData(["0-4"], [10.0], [1000.0])
+        with self.assertRaises(ValueError):
+            ASRCalculator.calculate_direct_asr(data, alpha=0.0)
+
+    def test_invalid_alpha_fay_feuer_raises(self):
+        with self.assertRaises(ValueError):
+            fay_feuer_ci(0.001, 1e-8, [0.5, 0.5], [1000.0, 1000.0], alpha=1.0)
+
+    def test_invalid_alpha_smr_raises(self):
+        data = AgeSpecificData(["0-4"], [10.0], [1000.0])
+        with self.assertRaises(ValueError):
+            ASRCalculator.calculate_smr(data, {"0-4": 0.001}, alpha=-0.1)
+
+    def test_invalid_alpha_poisson_ci_raises(self):
+        with self.assertRaises(ValueError):
+            smr_poisson_ci(10.0, 5.0, alpha=0.0)
+
+    def test_csv_wrong_extension_raises(self):
+        with self.assertRaises(ValueError):
+            read_age_specific_csv("data.txt")
+
+    def test_csv_nonexistent_file_raises(self):
+        with self.assertRaises(FileNotFoundError):
+            read_age_specific_csv("nonexistent_file.csv")
+
+    def test_csv_negative_count_raises(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, newline="") as f:
+            f.write("age_group,count,person_years\n0-4,-5,1000\n")
+            tmp_path = f.name
+        try:
+            with self.assertRaises(ValueError):
+                read_age_specific_csv(tmp_path)
+        finally:
+            os.unlink(tmp_path)
+
+    def test_csv_invalid_numeric_raises(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, newline="") as f:
+            f.write("age_group,count,person_years\n0-4,abc,1000\n")
+            tmp_path = f.name
+        try:
+            with self.assertRaises(ValueError):
+                read_age_specific_csv(tmp_path)
+        finally:
+            os.unlink(tmp_path)
+
+    def test_mismatched_lengths_direct_standardize(self):
+        with self.assertRaises(ValueError):
+            direct_standardize([0.5, 0.5], [10.0], [1000.0, 2000.0])
 
 
 if __name__ == "__main__":
