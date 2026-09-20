@@ -309,6 +309,28 @@ class TestInputValidation(unittest.TestCase):
         with self.assertRaises(ValueError):
             direct_standardize([0.5, 0.5], [10.0], [1000.0, 2000.0])
 
+    def test_zero_person_years_rejected(self):
+        with self.assertRaises(ValueError):
+            AgeSpecificData(["0-4"], [0.0], [0.0])
+
+    def test_duplicate_age_groups_rejected(self):
+        with self.assertRaises(ValueError):
+            AgeSpecificData(["0-4", "0-4"], [1.0, 2.0], [1000.0, 1000.0])
+
+    def test_nonfinite_values_rejected(self):
+        with self.assertRaises(ValueError):
+            AgeSpecificData(["0-4"], [float("nan")], [1000.0])
+
+    def test_csv_missing_required_columns_raises(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, newline="") as f:
+            f.write("age_group,count\n0-4,1\n")
+            tmp_path = f.name
+        try:
+            with self.assertRaises(ValueError):
+                read_age_specific_csv(tmp_path)
+        finally:
+            os.unlink(tmp_path)
+
 
 if __name__ == "__main__":
     unittest.main()

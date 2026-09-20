@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Age-Standardized Rate Calculator</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Epidemiology utility</p>
+      <h1>Age-Standardized Rate Calculator</h1>
+    </div>
+    <div class="header-actions">
+      <span class="privacy-badge">Local processing</span>
+      <button id="themeToggle" class="icon-button" type="button" aria-label="Switch theme">Dark</button>
+    </div>
+  </header>
+
+  <main class="app-shell">
+    <section class="panel input-panel" aria-labelledby="inputTitle">
+      <div class="panel-head">
+        <div>
+          <h2 id="inputTitle">Age-specific data</h2>
+          <p>Enter events and person-years for each five-year age band.</p>
+        </div>
+        <label class="select-wrap">
+          <span>Standard</span>
+          <select id="standardSelect">
+            <option value="who2000">WHO World 2000-2025</option>
+            <option value="us2000">US 2000</option>
+            <option value="segi1960">Segi 1960</option>
+            <option value="european2013">European 2013</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="toolbar" aria-label="Data actions">
+        <button id="exampleButton" type="button">Load example</button>
+        <label class="button-like" for="csvInput">Import CSV</label>
+        <input id="csvInput" type="file" accept=".csv,text/csv" hidden>
+        <button id="clearButton" type="button" class="secondary">Clear</button>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Age group</th>
+              <th scope="col">Events</th>
+              <th scope="col">Person-years</th>
+            </tr>
+          </thead>
+          <tbody id="dataRows"></tbody>
+        </table>
+      </div>
+
+      <div class="input-footer">
+        <p id="inputStatus" class="status" role="status">Ready.</p>
+        <button id="calculateButton" class="primary" type="button">Calculate ASR</button>
+      </div>
+    </section>
+
+    <section class="panel result-panel" aria-labelledby="resultTitle">
+      <div class="panel-head result-head">
+        <div>
+          <h2 id="resultTitle">Results</h2>
+          <p>Rates are reported per 100,000 person-years.</p>
+        </div>
+        <button id="downloadButton" type="button" class="secondary" disabled>Export CSV</button>
+      </div>
+
+      <div id="emptyState" class="empty-state">
+        <strong>No result yet</strong>
+        <span>Load the example or enter your data, then calculate.</span>
+      </div>
+
+      <div id="results" class="results" hidden>
+        <article class="metric featured">
+          <span>Age-standardized rate</span>
+          <strong id="asrValue">—</strong>
+          <small id="standardName">—</small>
+        </article>
+
+        <div class="metric-grid">
+          <article class="metric">
+            <span>Fay & Feuer 95% CI</span>
+            <strong id="ciValue">—</strong>
+          </article>
+          <article class="metric">
+            <span>Crude rate</span>
+            <strong id="crudeValue">—</strong>
+          </article>
+          <article class="metric">
+            <span>Standard error</span>
+            <strong id="seValue">—</strong>
+          </article>
+          <article class="metric">
+            <span>Cumulative risk 0-74</span>
+            <strong id="riskValue">—</strong>
+          </article>
+        </div>
+
+        <dl class="summary-list">
+          <div><dt>Total events</dt><dd id="eventsValue">—</dd></div>
+          <div><dt>Total person-years</dt><dd id="pyValue">—</dd></div>
+          <div><dt>Wald 95% CI</dt><dd id="waldValue">—</dd></div>
+          <div><dt>Log 95% CI</dt><dd id="logValue">—</dd></div>
+        </dl>
+
+        <p class="method-note">Direct standardization with normalized reference weights. Confidence intervals follow the implementation in the Python library.</p>
+      </div>
+
+      <div id="errorBox" class="error-box" role="alert" hidden></div>
+    </section>
+  </main>
+
+  <footer>
+    <span>Runs entirely in your browser.</span>
+    <a href="https://github.com/abusuraihsakhri/age-standardized-rate-calculator" rel="noopener noreferrer">Source code</a>
+  </footer>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

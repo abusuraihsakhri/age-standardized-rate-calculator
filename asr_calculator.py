@@ -4,7 +4,7 @@ Age-Standardized Rate (ASR) Calculator
 ======================================
 A pure Python standard library epidemiological and statistical engine implementing:
 - Direct age-standardization for incidence and mortality rates
-- Fay & Feuer (1997) Gamma-distribution confidence intervals (SEER*Stat gold standard)
+- Fay & Feuer (1997) gamma-distribution confidence intervals
 - Normal approximation (Wald) and log-transformed confidence intervals
 - Indirect standardization: Standardized Mortality/Incidence Ratio (SMR/SIR) with exact Poisson CIs
 - Standardized Rate Ratio (SRR) and Standardized Rate Difference (SRD) with delta-method CIs
@@ -232,10 +232,22 @@ class AgeSpecificData:
     def __post_init__(self):
         if len(self.age_groups) != len(self.counts) or len(self.counts) != len(self.person_years):
             raise ValueError("Lengths of age_groups, counts, and person_years must match.")
+        if not self.age_groups:
+            raise ValueError("At least one age group is required.")
+        if any(not isinstance(age, str) or not age.strip() for age in self.age_groups):
+            raise ValueError("Age-group labels must be non-empty strings.")
+        normalized_ages = [age.strip() for age in self.age_groups]
+        if len(set(normalized_ages)) != len(normalized_ages):
+            raise ValueError("Duplicate age-group labels are not allowed.")
+        if any(not math.isfinite(float(c)) for c in self.counts):
+            raise ValueError("Event counts must be finite numeric values.")
+        if any(not math.isfinite(float(py)) for py in self.person_years):
+            raise ValueError("Person-years must be finite numeric values.")
         if any(c < 0 for c in self.counts):
             raise ValueError("Event counts cannot be negative.")
-        if any(py < 0 for py in self.person_years):
-            raise ValueError("Person-years cannot be negative.")
+        if any(py <= 0 for py in self.person_years):
+            raise ValueError("Person-years must be strictly positive for every age group.")
+        self.age_groups = normalized_ages
 
     def total_events(self) -> float:
         return sum(self.counts)
@@ -311,6 +323,20 @@ def direct_standardize(
     """
     if len(weights) != len(counts) or len(counts) != len(person_years):
         raise ValueError("Lengths of weights, counts, and person_years must match.")
+    if not weights:
+        raise ValueError("At least one stratum is required.")
+    if any(not math.isfinite(float(v)) for v in weights):
+        raise ValueError("Weights must be finite numeric values.")
+    if any(not math.isfinite(float(v)) for v in counts):
+        raise ValueError("Counts must be finite numeric values.")
+    if any(not math.isfinite(float(v)) for v in person_years):
+        raise ValueError("Person-years must be finite numeric values.")
+    if any(w < 0 for w in weights):
+        raise ValueError("Weights cannot be negative.")
+    if any(d < 0 for d in counts):
+        raise ValueError("Counts cannot be negative.")
+    if any(n <= 0 for n in person_years):
+        raise ValueError("Person-years must be strictly positive for every stratum.")
     w_sum = sum(weights)
     if w_sum <= 0:
         raise ValueError("Sum of weights must be positive.")
@@ -319,12 +345,9 @@ def direct_standardize(
     asr = 0.0
     var = 0.0
     for w, d, n in zip(norm_w, counts, person_years):
-        if n > 0:
-            rate = d / n
-            asr += w * rate
-            var += (w ** 2) * d / (n ** 2)
-        elif d > 0:
-            raise ValueError("Cannot have positive events with zero person-years.")
+        rate = d / n
+        asr += w * rate
+        var += (w ** 2) * d / (n ** 2)
     return asr, var
 
 
@@ -341,16 +364,22 @@ def fay_feuer_ci(
     """
     if not (0.0 < alpha < 1.0):
         raise ValueError(f"alpha must be in (0, 1), got {alpha}")
+    if len(weights) != len(person_years) or not weights:
+        raise ValueError("weights and person_years must be non-empty and have matching lengths.")
+    if any(n <= 0 for n in person_years):
+        raise ValueError("Person-years must be strictly positive for every stratum.")
     w_sum = sum(weights)
+    if w_sum <= 0:
+        raise ValueError("Sum of weights must be positive.")
     norm_w = [w / w_sum for w in weights]
 
-    wm_candidates = [(w / n) for w, n in zip(norm_w, person_years) if n > 0]
-    wm = max(wm_candidates) if wm_candidates else 0.0
+    wm = max(w / n for w, n in zip(norm_w, person_years))
+    if wm <= 0:
+        raise ValueError("At least one positive standardized weight is required.")
 
     if asr_val == 0.0 or var_val == 0.0:
         lower = 0.0
-        df_u = 2.0 * (wm ** 2) / (wm ** 2)
-        upper = (wm / 2.0) * chi2_ppf(1.0 - alpha / 2.0, df_u)
+        upper = (wm / 2.0) * chi2_ppf(1.0 - alpha / 2.0, 2.0)
         return lower, upper
 
     df_l = 2.0 * (asr_val ** 2) / var_val
@@ -463,8 +492,12 @@ class ASRCalculator:
                     "standard_weight": w,
                 })
 
-                # If age is under 75 years
-                if any(tag in age for tag in ["0-", "5-", "10-", "15-", "20-", "25-", "30-", "35-", "40-", "45-", "50-", "55-", "60-", "65-", "70-"]):
+                # Cumulative rate through age 74 for the built-in five-year bands.
+                if age in {
+                    "0-4", "5-9", "10-14", "15-19", "20-24", "25-29",
+                    "30-34", "35-39", "40-44", "45-49", "50-54", "55-59",
+                    "60-64", "65-69", "70-74",
+                }:
                     cum_rate += 5.0 * r_i
             else:
                 raise ValueError(f"Age group '{age}' from data not found in standard population.")
@@ -524,7 +557,7 @@ class ASRCalculator:
         byar_l = (obs * (1.0 - 1.0 / (9.0 * obs) - (z / 3.0) * math.sqrt(1.0 / obs)) ** 3) / exp if obs > 0 else 0.0
         byar_u = ((obs + 1.0) * (1.0 - 1.0 / (9.0 * (obs + 1.0)) + (z / 3.0) * math.sqrt(1.0 / (obs + 1.0))) ** 3) / exp if obs > 0 else 0.0
 
-        # Two-sided Poisson p-value vs unity
+        # Two-sided normal-approximation test of observed versus expected events.
         z_stat = (obs - exp) / math.sqrt(exp)
         p_val = 2.0 * (1.0 - normal_cdf(abs(z_stat)))
 
@@ -608,20 +641,31 @@ def read_age_specific_csv(path: str) -> AgeSpecificData:
     age_groups, counts, person_years = [], [], []
     with open(csv_path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
+        fieldnames = [name.strip() for name in (reader.fieldnames or []) if name]
+        age_col = next((c for c in ("age_group", "age") if c in fieldnames), None)
+        count_col = next((c for c in ("count", "cases", "events") if c in fieldnames), None)
+        py_col = next((c for c in ("person_years", "population", "py") if c in fieldnames), None)
+        if not age_col or not count_col or not py_col:
+            raise ValueError(
+                "CSV must contain an age column (age_group/age), an event column "
+                "(count/cases/events), and a denominator column "
+                "(person_years/population/py)."
+            )
         for row_num, row in enumerate(reader, start=2):  # row 1 is header
-            # Flexible column lookup
-            age = row.get("age_group", row.get("age", "")).strip()
+            age = (row.get(age_col) or "").strip()
             if not age:
                 raise ValueError(f"Missing age_group in row {row_num} of {path}")
             try:
-                cnt = float(row.get("count", row.get("cases", row.get("events", 0.0))))
-                py = float(row.get("person_years", row.get("population", row.get("py", 0.0))))
-            except (ValueError, TypeError) as e:
+                cnt = float(row[count_col])
+                py = float(row[py_col])
+            except (ValueError, TypeError, KeyError) as e:
                 raise ValueError(f"Invalid numeric value in row {row_num} of {path}: {e}")
+            if not math.isfinite(cnt) or not math.isfinite(py):
+                raise ValueError(f"Non-finite numeric value in row {row_num} of {path}")
             if cnt < 0:
                 raise ValueError(f"Negative count in row {row_num} of {path}: {cnt}")
-            if py < 0:
-                raise ValueError(f"Negative person-years in row {row_num} of {path}: {py}")
+            if py <= 0:
+                raise ValueError(f"Person-years must be positive in row {row_num} of {path}: {py}")
             age_groups.append(age)
             counts.append(cnt)
             person_years.append(py)
@@ -643,7 +687,11 @@ def standard_weights(std_rows: Sequence[Tuple[str, float]]) -> Tuple[List[str], 
     if not std_rows:
         raise ValueError("Standard population rows cannot be empty.")
     ages = [r[0] for r in std_rows]
+    if len({r[0] for r in std_rows}) != len(std_rows):
+        raise ValueError("Standard population age groups must be unique.")
     raw_weights = [float(r[1]) for r in std_rows]
+    if any(not math.isfinite(w) or w < 0 for w in raw_weights):
+        raise ValueError("Standard population weights must be finite and non-negative.")
     total = sum(raw_weights)
     if total <= 0:
         raise ValueError("Sum of standard population weights must be positive.")
@@ -693,8 +741,8 @@ def direct_standardization_report(
     """
     ages, weights = standard_weights(std_rows)
     w, c, py = align_to_standard(data, ages, weights)
-    asr_raw, var_raw = direct_standardize(weights, c, py)
-    low, high = fay_feuer_ci(asr_raw, var_raw, weights, py, alpha=alpha)
+    asr_raw, var_raw = direct_standardize(w, c, py)
+    low, high = fay_feuer_ci(asr_raw, var_raw, w, py, alpha=alpha)
     crude = data.crude_rate()
     return {
         "asr": round(asr_raw * per, 2),
