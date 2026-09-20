@@ -555,7 +555,7 @@ class ASRCalculator:
         # Byar approximation
         z = normal_ppf(1.0 - alpha / 2.0)
         byar_l = (obs * (1.0 - 1.0 / (9.0 * obs) - (z / 3.0) * math.sqrt(1.0 / obs)) ** 3) / exp if obs > 0 else 0.0
-        byar_u = ((obs + 1.0) * (1.0 - 1.0 / (9.0 * (obs + 1.0)) + (z / 3.0) * math.sqrt(1.0 / (obs + 1.0))) ** 3) / exp if obs > 0 else 0.0
+        byar_u = ((obs + 1.0) * (1.0 - 1.0 / (9.0 * (obs + 1.0)) + (z / 3.0) * math.sqrt(1.0 / (obs + 1.0))) ** 3) / exp if obs > 0 else -math.log(alpha / 2.0) / exp
 
         # Two-sided normal-approximation test of observed versus expected events.
         z_stat = (obs - exp) / math.sqrt(exp)
