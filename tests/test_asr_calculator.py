@@ -158,6 +158,27 @@ class TestHighLevelASRCalculator(unittest.TestCase):
         self.assertAlmostEqual(comp.rate_difference_per_100k, 100.0, places=1)
 
 
+class TestRegressionCases(unittest.TestCase):
+    def test_cumulative_rate_excludes_75_79_band(self):
+        ages = [age for age, _ in asr.WHO_WORLD_2000_2025]
+        counts = [0.0] * len(ages)
+        counts[ages.index("75-79")] = 100.0
+        data = AgeSpecificData(ages, counts, [100000.0] * len(ages))
+        res = ASRCalculator.calculate_direct_asr(data, standard_population="who2000")
+        self.assertEqual(res.cumulative_rate_0_74_pct, 0.0)
+        self.assertEqual(res.cumulative_risk_0_74_pct, 0.0)
+
+    def test_zero_observed_smr_has_positive_upper_byar_bound(self):
+        data = AgeSpecificData(
+            age_groups=["0-4", "5-9"],
+            counts=[0.0, 0.0],
+            person_years=[5000.0, 5000.0],
+        )
+        res = ASRCalculator.calculate_smr(data, {"0-4": 0.001, "5-9": 0.001})
+        self.assertEqual(res.byar_ci_95[0], 0.0)
+        self.assertGreater(res.byar_ci_95[1], 0.0)
+
+
 class TestCLIAndBatch(unittest.TestCase):
     def test_cli_demo(self):
         self.assertEqual(cli.main(["--demo"]), 0)
