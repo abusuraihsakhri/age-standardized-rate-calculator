@@ -62,7 +62,7 @@ def format_indirect_report(res: IndirectStandardizationResult) -> str:
         f"  - Standardized Ratio (SMR/SIR):   {res.smr:.3f}",
         f"  - Exact Poisson 95% CI:           [{res.exact_poisson_ci_95[0]:.3f} - {res.exact_poisson_ci_95[1]:.3f}]",
         f"  - Byar Approximation 95% CI:      [{res.byar_ci_95[0]:.3f} - {res.byar_ci_95[1]:.3f}]",
-        f"  - Two-Sided p-Value (vs. 1.0):    {res.p_value_vs_unity:.4f}",
+        f"  - Normal-Approx. p-Value (vs. 1): {res.p_value_vs_unity:.4f}",
         f"  - Clinical Interpretation:        {res.interpretation}",
         "=" * 78,
     ]
