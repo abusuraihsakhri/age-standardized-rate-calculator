@@ -1,5 +1,7 @@
 # Age-Standardized Rate Calculator
 
+### [Open the Live Application →](https://abusuraihsakhri.github.io/age-standardized-rate-calculator/)
+
 A Python implementation of direct and indirect age standardization, rate comparisons, confidence intervals, and related epidemiological summaries.
 
 ## What it does
