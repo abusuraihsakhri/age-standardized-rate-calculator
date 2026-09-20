@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Direct age-standardized rate calculator for epidemiological data.">
+  <meta name="color-scheme" content="light dark">
+  <title>Age-Standardized Rate Calculator</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div><span class="kicker">Epidemiology calculator</span><h1>Age-Standardized Rate Calculator</h1><p>Direct standardization with Fay–Feuer, Wald, and log-transformed confidence intervals.</p></div>
+  <button id="theme" class="ghost icon" type="button" aria-label="Toggle dark mode">◐</button>
+</header>
+<main>
+  <section class="panel input-panel">
+    <div class="head"><div><h2>Input</h2><p>Enter events and person-years for each age band.</p></div>
+      <label>Standard<select id="standard">
+        <option value="who2000">WHO World 2000–2025</option>
+        <option value="us2000">US 2000</option>
+        <option value="segi1960">Segi 1960</option>
+        <option value="european2013">European 2013</option>
+      </select></label>
+    </div>
+    <div class="toolbar">
+      <label class="ghost file" for="csv">Import CSV</label><input id="csv" type="file" accept=".csv,text/csv" hidden>
+      <button id="example" class="ghost" type="button">Load example</button>
+      <button id="reset" class="ghost" type="button">Reset</button>
+      <span id="status" role="status">Ready</span>
+    </div>
+    <div class="table-wrap" tabindex="0"><table>
+      <thead><tr><th>Age</th><th>Events</th><th>Person-years</th><th>Rate / 100k</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+    <div class="actions"><button id="analyse" class="primary" type="button">Analyse</button><small>Runs entirely in your browser. No data are uploaded.</small></div>
+  </section>
+  <section class="panel result-panel">
+    <div class="head"><div><h2>Results</h2><p id="standardName">WHO World 2000–2025</p></div><button id="export" class="ghost" type="button" disabled>Export JSON</button></div>
+    <div id="error" class="error" hidden role="alert"></div>
+    <div class="cards">
+      <article class="card primary-card"><span>Age-standardized rate</span><strong id="asr">—</strong><small>per 100,000</small></article>
+      <article class="card"><span>Crude rate</span><strong id="crude">—</strong><small>per 100,000</small></article>
+      <article class="card wide"><span>Fay–Feuer 95% CI</span><strong id="ff">—</strong></article>
+      <article class="card wide"><span>Wald 95% CI</span><strong id="wald">—</strong></article>
+      <article class="card wide"><span>Log-transformed 95% CI</span><strong id="logci">—</strong></article>
+      <article class="card"><span>Cumulative rate 0–74</span><strong id="cumrate">—</strong><small>%</small></article>
+      <article class="card"><span>Cumulative risk 0–74</span><strong id="cumrisk">—</strong><small>%</small></article>
+    </div>
+    <div class="summary"><div><span>Events</span><b id="events">—</b></div><div><span>Person-years</span><b id="py">—</b></div><div><span>SE / 100k</span><b id="se">—</b></div></div>
+    <details><summary>Method notes</summary><p>Standard weights are normalized before calculation. Variance assumes independent Poisson event counts. Cumulative metrics include only age bands 0–4 through 70–74.</p></details>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
