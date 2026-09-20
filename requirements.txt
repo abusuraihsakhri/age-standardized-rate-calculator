@@ -1,7 +1,4 @@
-# Core library requires no external dependencies (pure Python standard library).
-# The following are optional enrichment/test dependencies:
-
-numpy>=1.24       # Required for asr_enrichment_features.py
-scipy>=1.10       # Optional: alternative statistical functions
-matplotlib>=3.7   # Optional: visualization
-pytest>=7.0       # Optional: test runner
+# Core calculator: Python standard library only.
+# Optional enrichment and test dependencies.
+numpy>=1.24,<3
+pytest>=7,<10
