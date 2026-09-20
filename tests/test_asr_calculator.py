@@ -117,6 +117,19 @@ class TestIndirectStandardizationSMR(unittest.TestCase):
         self.assertEqual(lower, 0.0)
         self.assertGreater(upper, 0.0)
 
+    def test_zero_observed_smr_byar_upper_bound_is_positive(self):
+        data = AgeSpecificData(
+            age_groups=["0-4", "5-9"],
+            counts=[0.0, 0.0],
+            person_years=[5000.0, 5000.0],
+        )
+        result = ASRCalculator.calculate_smr(
+            data,
+            {"0-4": 0.001, "5-9": 0.001},
+        )
+        self.assertEqual(result.byar_ci_95[0], 0.0)
+        self.assertAlmostEqual(result.byar_ci_95[1], 0.369, places=3)
+
 
 class TestHighLevelASRCalculator(unittest.TestCase):
     def test_calculate_direct_asr(self):
