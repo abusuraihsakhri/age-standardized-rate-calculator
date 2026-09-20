@@ -217,6 +217,12 @@ BUILTIN_STANDARDS: Dict[str, List[Tuple[str, float]]] = {
     "european2013": EUROPEAN_2013_STANDARD,
 }
 
+# Five-year age bands included in cumulative rate/risk through age 74.
+CUMULATIVE_0_74_AGE_GROUPS = frozenset({
+    "0-4", "5-9", "10-14", "15-19", "20-24", "25-29", "30-34", "35-39",
+    "40-44", "45-49", "50-54", "55-59", "60-64", "65-69", "70-74",
+})
+
 
 # ============================================================================
 # Data Models
@@ -463,8 +469,8 @@ class ASRCalculator:
                     "standard_weight": w,
                 })
 
-                # If age is under 75 years
-                if any(tag in age for tag in ["0-", "5-", "10-", "15-", "20-", "25-", "30-", "35-", "40-", "45-", "50-", "55-", "60-", "65-", "70-"]):
+                # Cumulative rate through age 74 uses only the 0-4 through 70-74 bands.
+                if age in CUMULATIVE_0_74_AGE_GROUPS:
                     cum_rate += 5.0 * r_i
             else:
                 raise ValueError(f"Age group '{age}' from data not found in standard population.")
@@ -522,9 +528,9 @@ class ASRCalculator:
         # Byar approximation
         z = normal_ppf(1.0 - alpha / 2.0)
         byar_l = (obs * (1.0 - 1.0 / (9.0 * obs) - (z / 3.0) * math.sqrt(1.0 / obs)) ** 3) / exp if obs > 0 else 0.0
-        byar_u = ((obs + 1.0) * (1.0 - 1.0 / (9.0 * (obs + 1.0)) + (z / 3.0) * math.sqrt(1.0 / (obs + 1.0))) ** 3) / exp if obs > 0 else 0.0
+        byar_u = ((obs + 1.0) * (1.0 - 1.0 / (9.0 * (obs + 1.0)) + (z / 3.0) * math.sqrt(1.0 / (obs + 1.0))) ** 3) / exp if obs > 0 else -math.log(alpha / 2.0) / exp
 
-        # Two-sided Poisson p-value vs unity
+        # Two-sided normal-approximation p-value vs unity
         z_stat = (obs - exp) / math.sqrt(exp)
         p_val = 2.0 * (1.0 - normal_cdf(abs(z_stat)))
 
