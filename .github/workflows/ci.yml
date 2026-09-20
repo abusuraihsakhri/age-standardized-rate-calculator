@@ -35,3 +35,8 @@ jobs:
         python cli.py direct --input sample.csv --json
         python cli.py batch --input sample.csv --output out_smoke.csv
 
+    - name: Verify browser app
+      run: |
+        node --check app.js
+        node tests/web_smoke.js
+
